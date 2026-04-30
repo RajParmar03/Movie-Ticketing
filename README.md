@@ -13,7 +13,9 @@ A production-grade RESTful API for a movie ticketing platform. Admins manage mov
 - [Concurrency Strategy](#concurrency-strategy)
 - [API Overview](#api-overview)
 - [Testing](#testing)
+- [Project Structure](#project-structure)
 - [Known Limitations & Future Improvements](#known-limitations--future-improvements)
+- [Submission Checklist](#submission-checklist)
 
 ---
 
@@ -37,15 +39,23 @@ npm install
 
 ```bash
 cp .env.example .env
-# Fill in DATABASE_URL, JWT secrets, and other required values
+# Edit .env — fill in DATABASE_URL, JWT secrets, and other required values
 ```
 
-### 3. Run Migrations
+### 3. Create and Run Migrations
 
+**First time (creates migration files + applies them):**
+```bash
+npx prisma migrate dev --name init
+```
+
+**Subsequent runs / CI / production (applies existing migrations only):**
 ```bash
 npx prisma migrate deploy
 npx prisma generate
 ```
+
+> Do **not** use `prisma db push` in production — it bypasses migration history.
 
 ### 4. (Optional) Seed an Admin User
 
@@ -77,30 +87,20 @@ npm start
 
 Copy `.env.example` to `.env`. All variables are required unless marked optional.
 
-```env
-# ── Application ───────────────────────────────────────────
-NODE_ENV=development           # development | test | production
-PORT=3000
+| Variable | Example value | Description |
+|---|---|---|
+| `NODE_ENV` | `development` | Runtime environment. One of `development`, `test`, `production`. Controls logging verbosity and DB selection. |
+| `PORT` | `3000` | Port the HTTP server listens on. |
+| `DATABASE_URL` | `postgresql://user:pass@localhost:5432/movie_ticketing` | PostgreSQL connection string for the main (development / production) database. |
+| `DATABASE_URL_TEST` | `postgresql://user:pass@localhost:5432/movie_ticketing_test` | Separate PostgreSQL database used exclusively by the test suite. Must point to a **different** database from `DATABASE_URL` — tests truncate all tables between runs. |
+| `JWT_SECRET` | *(64-byte hex string)* | Secret used to sign and verify short-lived **access tokens** (15-minute expiry). Generate with: `node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"` |
+| `JWT_REFRESH_SECRET` | *(64-byte hex string)* | Secret used to sign and verify long-lived **refresh tokens** (7-day expiry). Must be different from `JWT_SECRET`. |
+| `JWT_EXPIRES_IN` | `15m` | Access token lifetime. Uses the [`ms`](https://github.com/vercel/ms) format (`15m`, `1h`, etc.). |
+| `JWT_REFRESH_EXPIRES_IN` | `7d` | Refresh token lifetime. Uses the `ms` format (`7d`, `30d`, etc.). |
+| `BCRYPT_ROUNDS` | `12` | bcrypt cost factor for password hashing. Higher = slower hash but more resistant to brute-force. `12` is the recommended production value; use `4` in tests for speed. |
+| `HOLD_DURATION_MINUTES` | `10` | How many minutes a seat hold lasts after `POST /bookings/reserve` before the background job automatically expires it and releases the seats. |
 
-# ── Database ──────────────────────────────────────────────
-DATABASE_URL=postgresql://user:password@localhost:5432/movie_ticketing
-DATABASE_URL_TEST=postgresql://user:password@localhost:5432/movie_ticketing_test
-
-# ── JWT ───────────────────────────────────────────────────
-# Generate with: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
-JWT_SECRET=<64-byte-hex-secret>
-JWT_REFRESH_SECRET=<64-byte-hex-secret>
-JWT_EXPIRES_IN=15m
-JWT_REFRESH_EXPIRES_IN=7d
-
-# ── Security ──────────────────────────────────────────────
-BCRYPT_ROUNDS=12
-
-# ── Booking ───────────────────────────────────────────────
-HOLD_DURATION_MINUTES=10       # How long a seat hold lasts before auto-expiry
-```
-
-See `.env.example` for a complete template.
+A complete `.env.example` file is included in the repository root.
 
 ---
 
@@ -315,6 +315,59 @@ tests/
 
 ---
 
+## Project Structure
+
+```
+movie-ticketing/
+├── prisma/
+│   ├── schema.prisma          # All models, enums, indexes, and relations
+│   ├── migrations/            # Versioned SQL migrations (never use db push in prod)
+│   └── seed.ts                # Seeds one admin + one customer for local dev
+├── src/
+│   ├── config/
+│   │   ├── env.ts             # Zod-validated env — process exits on startup if vars are missing
+│   │   ├── constants.ts       # HOLD_DURATION_MS, seat price multipliers, row labels
+│   │   └── database.ts        # Singleton PrismaClient (switches to DATABASE_URL_TEST in test env)
+│   ├── modules/               # One folder per domain; each has router, controller, service, schema
+│   │   ├── auth/              # register, login, refresh, logout
+│   │   ├── movies/            # CRUD + soft delete + filter/sort/paginate
+│   │   ├── screens/           # Create with auto seat generation
+│   │   ├── showtimes/         # Create with auto seat_inventory population + seat map
+│   │   ├── bookings/          # reserve (FOR UPDATE SKIP LOCKED), confirm, cancel, list
+│   │   └── payments/          # Mock payment record creation
+│   ├── middleware/
+│   │   ├── authenticate.ts    # Verifies JWT, attaches req.user
+│   │   ├── authorize.ts       # RBAC: authorize('admin') | authorize('customer')
+│   │   ├── validate.ts        # Zod middleware factory
+│   │   ├── rateLimiter.ts     # Three limiters: auth / booking / general
+│   │   └── errorHandler.ts    # Centralized — the only place that writes error responses
+│   ├── jobs/
+│   │   └── holdExpiry.job.ts  # node-cron job: runs every minute, expires stale holds
+│   ├── utils/
+│   │   ├── AppError.ts        # Custom error class (statusCode + code + details)
+│   │   ├── asyncHandler.ts    # Wraps async route handlers, forwards errors to next()
+│   │   ├── pricing.ts         # calculatePrice(basePrice, seatType)
+│   │   └── generateReference.ts # Booking reference generator (BK-XXXXXXXX)
+│   ├── docs/
+│   │   └── swagger.ts         # OpenAPI 3.0 spec — served at /api/docs
+│   ├── app.ts                 # Express app: middleware stack + route mounting
+│   └── server.ts              # HTTP server bootstrap + cron job start
+└── tests/
+    ├── helpers/
+    │   └── testSetup.ts       # DB migration, user/screen/showtime factory helpers, cleanup
+    ├── unit/
+    │   ├── pricing.test.ts
+    │   ├── rbac.middleware.test.ts
+    │   └── booking.service.test.ts
+    └── integration/
+        ├── auth.test.ts
+        ├── booking.lifecycle.test.ts
+        ├── rate-limit.test.ts
+        └── concurrency.test.ts   ← mandatory, must pass reliably
+```
+
+---
+
 ## Known Limitations & Future Improvements
 
 ### Current Limitations
@@ -338,3 +391,16 @@ tests/
 - **Refresh token families** — Detect stolen refresh tokens via reuse detection; invalidate the entire family on any reuse.
 - **`pg_cron` for hold expiry** — Database-native scheduler runs exactly once regardless of app instance count.
 - **Event audit log** — Record every seat state transition for customer support and debugging.
+
+---
+
+## Submission Checklist
+
+- [x] `/api/docs` renders Swagger UI with all endpoints documented
+- [x] `.env.example` is present and complete
+- [x] All migrations run cleanly on a fresh database (`npx prisma migrate deploy`)
+- [x] `npm test` runs and all tests pass, including the concurrency test
+- [x] The concurrency test fires 10 simultaneous requests and confirms exactly 1 succeeds
+- [x] No hardcoded secrets or debug `console.log` in production code
+- [x] TypeScript compiles clean (`npx tsc --noEmit`)
+- [x] README includes the **Concurrency Strategy** section
