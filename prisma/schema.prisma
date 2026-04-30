@@ -1,0 +1,224 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  admin
+  customer
+}
+
+enum MovieRating {
+  U
+  UA
+  A
+}
+
+enum SeatType {
+  standard
+  premium
+  vip
+}
+
+enum SeatStatus {
+  available
+  held
+  booked
+}
+
+enum BookingStatus {
+  pending
+  confirmed
+  cancelled
+  expired
+}
+
+enum PaymentStatus {
+  pending
+  completed
+  refunded
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role     @default(customer)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  refreshTokens RefreshToken[]
+  bookings      Booking[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Movie {
+  id              String      @id @default(uuid())
+  title           String
+  description     String
+  genre           String
+  language        String
+  durationMinutes Int         @map("duration_minutes")
+  rating          MovieRating
+  releaseDate     DateTime    @map("release_date") @db.Date
+  posterUrl       String?     @map("poster_url")
+  isActive        Boolean     @default(true) @map("is_active")
+  deletedAt       DateTime?   @map("deleted_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  showtimes Showtime[]
+
+  @@index([genre])
+  @@index([language])
+  @@index([rating])
+  @@map("movies")
+}
+
+model Screen {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  totalSeats  Int      @map("total_seats")
+  rows        Int
+  seatsPerRow Int      @map("seats_per_row")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  seats     Seat[]
+  showtimes Showtime[]
+
+  @@map("screens")
+}
+
+model Seat {
+  id        String   @id @default(uuid())
+  screenId  String   @map("screen_id")
+  row       String
+  number    Int
+  label     String
+  type      SeatType
+  createdAt DateTime @default(now()) @map("created_at")
+
+  screen        Screen          @relation(fields: [screenId], references: [id])
+  seatInventory SeatInventory[]
+
+  @@unique([screenId, row, number])
+  @@index([screenId])
+  @@map("seats")
+}
+
+model Showtime {
+  id        String   @id @default(uuid())
+  movieId   String   @map("movie_id")
+  screenId  String   @map("screen_id")
+  startsAt  DateTime @map("starts_at")
+  endsAt    DateTime @map("ends_at")
+  basePrice Decimal  @map("base_price") @db.Decimal(10, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  movie         Movie           @relation(fields: [movieId], references: [id])
+  screen        Screen          @relation(fields: [screenId], references: [id])
+  seatInventory SeatInventory[]
+  bookings      Booking[]
+
+  @@index([movieId])
+  @@index([screenId])
+  @@index([startsAt])
+  @@map("showtimes")
+}
+
+model SeatInventory {
+  id         String     @id @default(uuid())
+  showtimeId String     @map("showtime_id")
+  seatId     String     @map("seat_id")
+  status     SeatStatus @default(available)
+  heldUntil  DateTime?  @map("held_until")
+  price      Decimal    @db.Decimal(10, 2)
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+
+  showtime    Showtime     @relation(fields: [showtimeId], references: [id])
+  seat        Seat         @relation(fields: [seatId], references: [id])
+  bookedSeats BookedSeat[]
+
+  @@unique([showtimeId, seatId])
+  @@index([showtimeId, status])
+  @@index([status, heldUntil])
+  @@map("seat_inventory")
+}
+
+model Booking {
+  id               String        @id @default(uuid())
+  userId           String        @map("user_id")
+  showtimeId       String        @map("showtime_id")
+  status           BookingStatus @default(pending)
+  totalAmount      Decimal       @map("total_amount") @db.Decimal(10, 2)
+  bookingReference String?       @unique @map("booking_reference")
+  expiresAt        DateTime      @map("expires_at")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  user        User         @relation(fields: [userId], references: [id])
+  showtime    Showtime     @relation(fields: [showtimeId], references: [id])
+  bookedSeats BookedSeat[]
+  payment     Payment?
+
+  @@index([userId, status])
+  @@index([showtimeId, status])
+  @@index([status, expiresAt])
+  @@map("bookings")
+}
+
+model BookedSeat {
+  id              String  @id @default(uuid())
+  bookingId       String  @map("booking_id")
+  seatInventoryId String  @map("seat_inventory_id")
+  price           Decimal @db.Decimal(10, 2)
+
+  booking       Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  seatInventory SeatInventory @relation(fields: [seatInventoryId], references: [id])
+
+  @@unique([bookingId, seatInventoryId])
+  @@index([seatInventoryId])
+  @@map("booked_seats")
+}
+
+model Payment {
+  id            String        @id @default(uuid())
+  bookingId     String        @unique @map("booking_id")
+  amount        Decimal       @db.Decimal(10, 2)
+  status        PaymentStatus @default(completed)
+  paymentMethod String        @map("payment_method")
+  cardLastFour  String?       @map("card_last_four")
+  transactionId String        @unique @map("transaction_id")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@map("payments")
+}
